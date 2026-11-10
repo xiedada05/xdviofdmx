@@ -1,0 +1,11 @@
+target/
+*.class
+*.log
+.idea/
+*.iml
+.vscode/
+.DS_Store
+# 实现期参考的第三方源码不入库（来源与用途见 README「参考实现」）
+docs/reference/
+
+.zcode/

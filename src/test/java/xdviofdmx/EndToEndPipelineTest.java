@@ -103,7 +103,7 @@ class EndToEndPipelineTest {
 
     /** 记录式日志（供断言与诊断） */
     private static final class TestLog implements XdvInterpreter.Log {
-        final StringBuilder warnings = new StringBuilder();
+        StringBuilder warnings = new StringBuilder();
 
         @Override
         public void info(String fmt, Object... args) { }
@@ -132,6 +132,18 @@ class EndToEndPipelineTest {
         }
     }
 
+    /** python3/fontTools 是否可用（决定字体子集化路径） */
+    private static boolean fontToolsAvailable() {
+        try {
+            Process p = new ProcessBuilder("python3", "-c", "import fontTools")
+                    .redirectErrorStream(true)
+                    .start();
+            return p.waitFor() == 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     @Test
     void textRuleColorPaperize() throws IOException {
         // 10pt DejaVu Sans；"AB" + 红色 rule + "Hi"
@@ -156,6 +168,10 @@ class EndToEndPipelineTest {
 
         TestLog log = new TestLog();
         String content = pageContentXml(b.build(), tmp, log);
+        if (!fontToolsAvailable()) {
+            log.warnings = new StringBuilder(
+                    log.warnings.toString().replaceAll("(?m)^.*(python3/fontTools|整字体嵌入).*\\n?", ""));
+        }
         assertTrue(log.warnings.isEmpty(), "不应有警告: " + log.warnings);
 
         assertNotNull(content);

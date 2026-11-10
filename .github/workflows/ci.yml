@@ -23,6 +23,10 @@ jobs:
         with:
           workspaces: xdvjni
 
+      # 字体子集化路径在 CI 中一并实测
+      - name: Install python3-fontTools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq python3-fontTools
+
       # 从源码构建安装 xdvj（确定性；下游一次性使用也可改走 JitPack，
       # 首次解析需等待 JitPack 现场完成 Rust 构建）
       - uses: actions/checkout@v4

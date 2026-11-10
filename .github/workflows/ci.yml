@@ -17,7 +17,22 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # xdvj 依赖经 JitPack 解析（首次构建 xdvj 仓库需要几分钟）
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: xdvjni
+
+      # 从源码构建安装 xdvj（确定性；下游一次性使用也可改走 JitPack，
+      # 首次解析需等待 JitPack 现场完成 Rust 构建）
+      - uses: actions/checkout@v4
+        with:
+          repository: xiedada05/xdvjni
+          path: xdvjni
+
+      - name: Install xdvj locally
+        run: mvn -B --no-transfer-progress install -f xdvjni/pom.xml
+
       - name: Build & test
         run: mvn -B --no-transfer-progress verify
 

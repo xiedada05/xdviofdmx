@@ -50,6 +50,12 @@
     </dependencies>
 
     <repositories>
+        <!-- 显式声明 central 置于 jitpack 之前：JitPack 对个别 Central 构件
+             （如 xml-apis-ext:1.3.04）代理返回空 jar，顺序颠倒会导致编译失败 -->
+        <repository>
+            <id>central</id>
+            <url>https://repo.maven.apache.org/maven2</url>
+        </repository>
         <repository>
             <id>jitpack</id>
             <url>https://jitpack.io</url>

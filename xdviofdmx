@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# xdviofdmx —— XDV → OFD 转换器启动脚本，兼作 XeTeX 的输出驱动。
+#
+# 作为 XeLaTeX 的输出驱动（推荐用法）：
+#   xelatex -output-driver=xdviofdmx doc.tex        # 产出 doc.ofd
+#   xelatex -output-driver="$PWD/xdviofdmx" doc.tex # 未安装到 PATH 时用绝对路径
+#
+# 直接使用（与 xdvipdfmx 同风格）：
+#   xdviofdmx [选项] doc.xdv
+#   xelatex -no-pdf doc.tex && xdviofdmx doc.xdv
+#
+# xdvipdfmx 兼容：接受 -E（恒嵌入字体，此处恒为真，仅忽略）；
+# XeTeX 传来的 -o "*.pdf" 由 Java 端自动改写为 *.ofd。
+#
+# 环境变量：
+#   XDVIOFDMX_JAR  dist jar 路径（缺省按脚本目录、target/ 与常见安装路径查找）
+#   JAVA_OPTS      附加 JVM 参数（如 "-Xmx2g"）
+#
+# 依赖：Java 17+（xdvjni 原生库已内嵌在 dist jar 中）。
+
+set -euo pipefail
+
+die() {
+  echo "xdviofdmx: $*" >&2
+  exit 2
+}
+
+# 无参数且 stdin 是终端时给出提示，避免挂起等待输入
+if [[ $# -eq 0 && -t 0 ]]; then
+  cat >&2 <<'EOF'
+用法: xdviofdmx [选项] [xdvfile[.xdv]|-]
+作为 XeTeX 输出驱动:  xelatex -output-driver=xdviofdmx doc.tex
+常用选项:  -o file  -s pages  -p paper  -q  -v  --help
+EOF
+  exit 2
+fi
+
+# ---- 定位 dist jar ----
+if [[ -n "${XDVIOFDMX_JAR:-}" ]]; then
+  [[ -f ${XDVIOFDMX_JAR} ]] || die "XDVIOFDMX_JAR 指向的文件不存在: ${XDVIOFDMX_JAR}"
+  JAR=${XDVIOFDMX_JAR}
+else
+  src=${BASH_SOURCE[0]:-$0}
+  if resolved=$(readlink -f -- "$src" 2>/dev/null) && [[ -n $resolved ]]; then
+    src=$resolved
+  fi
+  self_dir=$(cd -- "$(dirname -- "$src")" && pwd -P)
+  JAR=
+  for cand in \
+    "$self_dir/xdviofdmx.jar" \
+    "$self_dir"/target/xdviofdmx-*-dist.jar \
+    /usr/local/share/xdviofdmx/xdviofdmx.jar \
+    /usr/local/lib/xdviofdmx/xdviofdmx.jar \
+    /opt/xdviofdmx/xdviofdmx.jar \
+    "${HOME:-}/.local/share/xdviofdmx/xdviofdmx.jar"; do
+    if [[ -f $cand ]]; then
+      JAR=$cand
+      break
+    fi
+  done
+  [[ -n $JAR ]] || die "找不到 xdviofdmx 的 dist jar。
+  请先执行 mvn package（生成 target/xdviofdmx-*-dist.jar），
+  或设置环境变量 XDVIOFDMX_JAR=/path/to/xdviofdmx-<版本>-dist.jar，
+  或将 jar 安装到 /usr/local/share/xdviofdmx/xdviofdmx.jar。"
+fi
+
+# ---- 定位 Java ----
+if [[ -n ${JAVA_HOME:-} && -x "${JAVA_HOME}/bin/java" ]]; then
+  JAVA=("${JAVA_HOME}/bin/java")
+elif command -v java >/dev/null 2>&1; then
+  JAVA=(java)
+else
+  die "找不到 java。请安装 JDK/JRE 17+ 或设置 JAVA_HOME。"
+fi
+
+# JDK 24+ 会对 JNI 的受限方法告警；支持该选项的 JVM 加上以消除
+jflags=()
+if "${JAVA[@]}" --enable-native-access=ALL-UNNAMED -version >/dev/null 2>&1; then
+  jflags+=(--enable-native-access=ALL-UNNAMED)
+fi
+
+extra=()
+if [[ -n ${JAVA_OPTS:-} ]]; then
+  read -r -a extra <<< "${JAVA_OPTS}"
+fi
+
+exec "${JAVA[@]}" "${extra[@]}" "${jflags[@]}" -jar "$JAR" "$@"

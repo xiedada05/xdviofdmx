@@ -56,19 +56,49 @@ java -jar xdviofdmx.jar demo.xdv  →  demo.ofd
 
 ```text
 用法: xdviofdmx [选项] [xdvfile[.xdv]|-]
-  -o file        输出 OFD 文件（缺省: 输入主名 + .ofd）
+  -o file        输出 OFD 文件（缺省: 输入主名 + .ofd；*.pdf 自动改为 *.ofd）
   -s pages       页选择，如 1-3,5（缺省全部）
-  -p paper       纸张（a4/a3/a5/b5/letter/legal 或 WxH，单位 mm），覆盖 special
+  -p paper       纸张（a0–a10/b0–b10/c0–c10、letter/legal/ledger 等，或 WxH，mm），覆盖 special
   -m mag         放大率（千分数，如 1200 = 1.2 倍）
   -v             增加日志（-vv 更详细）
   -q             静默
+  -E             兼容 xdvipdfmx：恒嵌入字体，接受并忽略
   --no-embed-fonts 字体按名引用而不嵌入
   --version      版本信息
 ```
 
-输入为 `-` 时从 stdin 流式读取（与 xdvipdfmx 相同的用法，配合
-`xelatex -no-pdf -o- ... | xdviofdmx -`——注意 XeTeX 侧需要对应管道写法）。
+输入为 `-` 时从 stdin 流式读取。
 图像等相对路径按当前工作目录解析（与 xdvipdfmx/kpathsea 一致）。
+
+### 作为 XeLaTeX 输出驱动（一条命令直接出 OFD）
+
+仓库根目录提供启动脚本 `xdviofdmx`（bash，另有 Windows 版 `xdviofdmx.cmd`），
+负责定位 jar 与 Java 并把参数透传给转换器。安装 jar 与脚本后即可：
+
+```bash
+# 安装（jar 放到脚本可找到的位置之一）
+sudo install -m644 target/xdviofdmx-*-dist.jar /usr/local/share/xdviofdmx/xdviofdmx.jar
+sudo install -m755 xdviofdmx /usr/local/bin/xdviofdmx
+
+# 一条命令产出 OFD
+xelatex -output-driver=/usr/local/bin/xdviofdmx doc.tex    # → doc.ofd
+```
+
+XeTeX 以 `xdviofdmx -q -E -o "doc.pdf" [-p paper]` 调用驱动并把 XDV 写入其
+stdin；`-E` 按 xdvipdfmx 语义接受（恒嵌入），`-o` 的 `.pdf` 扩展名自动改写为
+`.ofd`——所以 XeTeX 日志照常显示 "Output written on doc.pdf"，实际生成的是
+`doc.ofd`。
+
+**驱动名必须可被 popen 的 shell 找到**：XeTeX 对裸名字（不含 `/`）会拼接其
+编译期 bindir（Debian/Ubuntu 即 `/usr/bin`），不吃调用方的 `PATH`。因此要么
+写绝对路径（如上），要么把脚本装到 `/usr/bin` 后直接用 `-output-driver=xdviofdmx`。
+环境变量 `XDVIOFDMX_JAR` 可指定 jar 位置，`JAVA_OPTS` 传 JVM 参数（如 `-Xmx2g`）。
+
+不想动系统的场合，两步法等价：
+
+```bash
+xelatex -no-pdf doc.tex && xdviofdmx doc.xdv
+```
 
 ## 构建
 

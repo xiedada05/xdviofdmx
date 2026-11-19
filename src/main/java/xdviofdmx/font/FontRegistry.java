@@ -29,6 +29,16 @@ public final class FontRegistry implements AutoCloseable {
         loaded.remove(def.fontNum()); // 重新定义时废弃旧缓存
     }
 
+    /**
+     * 注册 legacy 基字体的 synthetic 定义与预构建字体（fontNum 由
+     * {@link LegacyFontManager} 分配，OTF 由其生成）。字体对象由管理器持有并
+     * 关闭，此处仅登记反查。
+     */
+    public void registerSynthetic(NativeFontDef def, LoadedFont font) {
+        defs.put(def.fontNum(), def);
+        loaded.put(def.fontNum(), font);
+    }
+
     public NativeFontDef defOf(int fontNum) {
         return defs.get(fontNum);
     }

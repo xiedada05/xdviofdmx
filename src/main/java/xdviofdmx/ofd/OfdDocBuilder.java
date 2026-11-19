@@ -31,6 +31,7 @@ import xdviofdmx.model.ColorSpec;
 import xdviofdmx.model.DestPoint;
 import xdviofdmx.model.ImagePlacement;
 import xdviofdmx.model.LinkZone;
+import xdviofdmx.model.OutlineRun;
 import xdviofdmx.model.PageContent;
 import xdviofdmx.model.PageItem;
 import xdviofdmx.model.Rule;
@@ -140,6 +141,8 @@ public final class OfdDocBuilder implements XdvInterpreter.Emitter, AutoCloseabl
                 emitRule(pg, rule);
             } else if (item instanceof ImagePlacement img) {
                 emitImage(pg, img);
+            } else if (item instanceof OutlineRun outline) {
+                emitOutlineRun(pg, outline);
             }
         }
         // 链接区域在 finishLinks() 统一发射（dest 可能出现在后续页）
@@ -375,6 +378,79 @@ public final class OfdDocBuilder implements XdvInterpreter.Emitter, AutoCloseabl
     }
 
     // ---------------------------------------------------------------- 轮廓兜底
+
+    /**
+     * legacy 字体的矢量轮廓文本发射（每字符一个 PathObject）。
+     * 段坐标已是 mm（相对字形原点，y 向下），与 emitGlyphOutline 的对象空间
+     * 约定一致（Boundary 左上角 + 对象内相对坐标）。
+     */
+    private void emitOutlineRun(OFDPageGraphics2D pg, OutlineRun run) {
+        for (OutlineRun.Glyph g : run.glyphs) {
+            emitOutlineGlyph(pg, run.state(), g.segments(), g.xMm(), g.yMm());
+        }
+    }
+
+    /** 单字符轮廓发射（供 emitGlyphOutline 与 legacy OutlineRun 共用的核心） */
+    private void emitOutlineGlyph(OFDPageGraphics2D pg, GraphicsState.Snapshot st,
+                                  List<OutlineSeg> segs, double px, double py) {
+        if (segs == null || segs.isEmpty()) {
+            return;
+        }
+        double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE;
+        double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+        List<double[]> pts = new ArrayList<>();
+        for (OutlineSeg seg : segs) {
+            double[] c = new double[seg.coords().length];
+            for (int i = 0; i < c.length; i++) {
+                // OutlineSeg 已是 mm（y 向下、基线原点）
+                c[i] = (i % 2 == 0) ? px + seg.coords()[i] : py + seg.coords()[i];
+                if (i % 2 == 0) {
+                    minX = Math.min(minX, c[i]);
+                    maxX = Math.max(maxX, c[i]);
+                } else {
+                    minY = Math.min(minY, c[i]);
+                    maxY = Math.max(maxY, c[i]);
+                }
+            }
+            pts.add(c);
+        }
+        if (minX > maxX) {
+            return;
+        }
+        double pad = BOUNDARY_PADDING_MIN;
+        double btlX = Coord.floor4(minX - pad);
+        double btlY = Coord.floor4(minY - pad);
+        double bw = Coord.ceil4(maxX + pad) - btlX;
+        double bh = Coord.ceil4(maxY + pad) - btlY;
+
+        AffineTransform m = new AffineTransform(st.ctm());
+        PathObject path = newPath(pg);
+        applyCtmAndBoundary(path, m, btlX, btlY, bw, bh);
+        AbbreviatedData ad = new AbbreviatedData();
+        for (double[] c : pts) {
+            switch (c.length) {
+                case 2 -> ad.M(Coord.r(c[0] - btlX), Coord.r(c[1] - btlY));
+                case 4 -> ad.Q(Coord.r(c[0] - btlX), Coord.r(c[1] - btlY),
+                        Coord.r(c[2] - btlX), Coord.r(c[3] - btlY));
+                case 6 -> ad.B(Coord.r(c[0] - btlX), Coord.r(c[1] - btlY),
+                        Coord.r(c[2] - btlX), Coord.r(c[3] - btlY),
+                        Coord.r(c[4] - btlX), Coord.r(c[5] - btlY));
+                default -> ad.C();
+            }
+        }
+        path.setAbbreviatedData(ad);
+        path.setFill(true);
+        path.setStroke(false);
+        path.setRule(org.ofdrw.core.graph.pathObj.Rule.NonZero);
+        path.setFillColor(colorOf(st.fill()));
+        if (st.alpha() < 255) {
+            path.setAlpha(st.alpha());
+        }
+        if (st.hasClip()) {
+            path.setClips(clipsOf(st, btlX, btlY));
+        }
+        append(pg, path);
+    }
 
     private void emitGlyphOutline(OFDPageGraphics2D pg, TextRun run, int index, LoadedFont font) {
         List<OutlineSeg> segs = font.outlineOf(run.gids[index] & 0xFFFF);
@@ -1050,7 +1126,7 @@ public final class OfdDocBuilder implements XdvInterpreter.Emitter, AutoCloseabl
     }
 
     private static void trimStack(List<?> stack, int depth) {
-        while (stack.size() >= depth) {
+        while (stack.size() >= Math.max(depth, 0) && !stack.isEmpty()) {
             stack.remove(stack.size() - 1);
         }
     }

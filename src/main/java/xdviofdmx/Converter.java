@@ -2,6 +2,8 @@ package xdviofdmx;
 
 import xdvjni.XdvParser;
 import xdviofdmx.font.FontRegistry;
+import xdviofdmx.font.KpathseaTexResolver;
+import xdviofdmx.font.LegacyFontManager;
 import xdviofdmx.font.LoadedFont;
 import xdviofdmx.ofd.OfdDocBuilder;
 
@@ -44,13 +46,19 @@ public final class Converter implements AutoCloseable {
         try {
             Coord coord = new Coord(config.mag());
             FontRegistry fonts = new FontRegistry(coord, toFontLog(), tempDir);
+            // legacy（TFM/VF/Type1）字体支持：解析器不可用时全部告警跳过
+            LegacyFontManager legacy = new LegacyFontManager(
+                    new KpathseaTexResolver(), coord, toFontLog(), fonts, tempDir);
             try (OfdDocBuilder builder = new OfdDocBuilder(config.output(), coord, fonts,
-                    config.embedFonts(), log)) {
+                    config.embedFonts(), log);
+                 LegacyFontManager lg = legacy) {
                 XdvInterpreter.Options opts = new XdvInterpreter.Options(
                         config.paperWidthMm(), config.paperHeightMm(), config.pageFilter());
-                XdvInterpreter interpreter = new XdvInterpreter(coord, fonts, builder, opts, log);
+                XdvInterpreter interpreter = new XdvInterpreter(coord, fonts, builder, opts,
+                        log, legacy);
 
                 try (XdvParser parser = new XdvParser(interpreter)) {
+                    interpreter.setParser(parser);
                     pump(parser);
                     parser.finish();
                 }

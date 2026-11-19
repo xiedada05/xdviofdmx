@@ -2,13 +2,17 @@ package xdviofdmx;
 
 import xdvjni.FileType;
 import xdvjni.XdvEvents;
+import xdvjni.XdvParser;
 import xdviofdmx.font.FontRegistry;
+import xdviofdmx.font.LegacyFontManager;
+import xdviofdmx.font.OutlineSeg;
 import xdviofdmx.font.LoadedFont;
 import xdviofdmx.font.NativeFontDef;
 import xdviofdmx.model.ColorSpec;
 import xdviofdmx.model.DestPoint;
 import xdviofdmx.model.ImagePlacement;
 import xdviofdmx.model.LinkZone;
+import xdviofdmx.model.OutlineRun;
 import xdviofdmx.model.PageContent;
 import xdviofdmx.model.Rule;
 import xdviofdmx.model.TextRun;
@@ -38,6 +42,10 @@ public final class XdvInterpreter implements XdvEvents, SpecialParser.SpecialSin
     private final Emitter emitter;
     private final Options options;
     private final Log log;
+    /** legacy（TFM/VF/Type1）字体管理器；null = 未接线（所有 legacy 文本告警跳过） */
+    private final LegacyFontManager legacy;
+    /** 解析器引用（legacy 宽度注入用；Converter 在喂流前接线） */
+    private XdvParser parserRef;
 
     private PageContent page;
     private int pageIndex = -1;
@@ -59,12 +67,23 @@ public final class XdvInterpreter implements XdvEvents, SpecialParser.SpecialSin
     private long unsupportedSpecials;
 
     public XdvInterpreter(Coord coord, FontRegistry fonts, Emitter emitter, Options options, Log log) {
+        this(coord, fonts, emitter, options, log, null);
+    }
+
+    public XdvInterpreter(Coord coord, FontRegistry fonts, Emitter emitter, Options options,
+                          Log log, LegacyFontManager legacy) {
         this.coord = coord;
         this.fonts = fonts;
         this.emitter = emitter;
         this.options = options;
         this.log = log;
+        this.legacy = legacy;
         this.specials = new SpecialParser(coord, state, this, new SpecialLog());
+    }
+
+    /** 接线解析器（必须在首次 feed 前调用；legacy 宽度注入通道） */
+    public void setParser(XdvParser parser) {
+        this.parserRef = parser;
     }
 
     /** 页面发射器（由 OfdDocBuilder 实现） */
@@ -187,12 +206,149 @@ public final class XdvInterpreter implements XdvEvents, SpecialParser.SpecialSin
     }
 
     @Override
-    public void handleCharRun(int fontNum, int[] chars) {
+    public void handleDefineFont(String area, String name, int fontNum, int checksum,
+                                 int scaledSize, int designSize) {
+        if (legacy == null) {
+            return; // 未接线：char run 走告警跳过路径
+        }
+        legacy.define(area, name, fontNum, checksum, scaledSize, designSize, (num, widths) -> {
+            if (parserRef != null) {
+                parserRef.setCharWidths(num, widths);
+            }
+        });
+        info("legacy 字体定义 #%d: %s/%s (scale=%s, design=%s)", fontNum,
+                area == null ? "" : area, name,
+                Integer.toUnsignedString(scaledSize), Integer.toUnsignedString(designSize));
+    }
+
+    @Override
+    public void handleCharRun(int fontNum, int[] chars, int[] xs, int[] ys) {
+        ensurePage();
+        if (page == null) {
+            return;
+        }
+        // 1) legacy 字体：槽位展开 → TextRun（synthetic OTF）或 OutlineRun 兜底
+        if (legacy != null && legacy.usable(fontNum)) {
+            addLegacyCharRun(fontNum, chars, xs, ys);
+            return;
+        }
+        // 2) native 字体的 char run（chars = Unicode 码点）：正向查 gid 发射
+        if (fonts.defOf(fontNum) != null) {
+            addNativeCharRun(fontNum, chars, xs, ys);
+            return;
+        }
+        // 3) 无定义（未接线/不可解析）：保持 v1 告警跳过语义
         legacyCharRuns++;
         if (legacyCharRuns == 1) {
-            warn("遇到传统（TFM）字体文本（fontNum=%d）——xdviofdmx v1 仅支持 native 字体，"
-                    + "此类文本被跳过（典型场景：未启用 unicode-math 的数学公式）。", fontNum);
+            warn("遇到传统（TFM）字体文本（fontNum=%d）——字体解析链不可用，"
+                    + "此类文本被跳过。", fontNum);
         }
+    }
+
+    /** legacy 字符 run：逐字符展开为基字体摆放，连续同基字体的段合并为 TextRun */
+    private void addLegacyCharRun(int fontNum, int[] chars, int[] xs, int[] ys) {
+        GraphicsState.Snapshot snap = state.snapshot();
+        LegacyFontManager.LegacyFont lf = legacy.fontOf(fontNum);
+        int[] curNum = {Integer.MIN_VALUE};
+        List<Integer> gids = new ArrayList<>();
+        List<String> unicodes = new ArrayList<>();
+        List<Double> runXs = new ArrayList<>();
+        List<Double> runYs = new ArrayList<>();
+        List<OutlineRun.Glyph> outlineGlyphs = new ArrayList<>();
+
+        // 段发射：把当前累积刷成一个 TextRun
+        Runnable flush = () -> {
+            if (gids.isEmpty()) {
+                return;
+            }
+            int[] g = new int[gids.size()];
+            for (int i = 0; i < gids.size(); i++) {
+                g[i] = gids.get(i);
+            }
+            String[] u = unicodes.toArray(new String[0]);
+            double[] x = runXs.stream().mapToDouble(Double::doubleValue).toArray();
+            double[] y = runYs.stream().mapToDouble(Double::doubleValue).toArray();
+            page.add(new TextRun(snap, curNum[0], g, x, y, u, null));
+            gids.clear();
+            unicodes.clear();
+            runXs.clear();
+            runYs.clear();
+        };
+
+        for (int i = 0; i < chars.length; i++) {
+            double xMm = coord.dviToMm(xs[i]) + ORIGIN_MM;
+            double yMm = coord.dviToMm(ys[i]) + ORIGIN_MM;
+            List<LegacyFontManager.Piece> pieces = legacy.expand(lf, chars[i], xMm, yMm);
+            for (LegacyFontManager.Piece piece : pieces) {
+                if (piece instanceof LegacyFontManager.GlyphPiece gp) {
+                    if (gp.font().loaded == null || gp.font().syntheticFontNum < 0) {
+                        // OTF 不可用：直接轮廓兜底
+                        List<OutlineSeg> segs = gp.font().outlineMmOf(gp.slot(), null);
+                        if (segs != null && !segs.isEmpty()) {
+                            flush.run();
+                            outlineGlyphs.add(new OutlineRun.Glyph(segs, gp.xMm(), gp.yMm()));
+                        }
+                        continue;
+                    }
+                    if (gp.font().syntheticFontNum != curNum[0]) {
+                        flush.run();
+                        curNum[0] = gp.font().syntheticFontNum;
+                    }
+                    gids.add(gp.slot());
+                    unicodes.add(gp.unicode());
+                    runXs.add(gp.xMm());
+                    runYs.add(gp.yMm());
+                } else if (piece instanceof LegacyFontManager.OutlinePiece op) {
+                    if (op.segments() != null && !op.segments().isEmpty()) {
+                        flush.run();
+                        curNum[0] = Integer.MIN_VALUE;
+                        outlineGlyphs.add(new OutlineRun.Glyph(op.segments(), op.xMm(), op.yMm()));
+                    }
+                } else if (piece instanceof LegacyFontManager.RulePiece rp) {
+                    flush.run();
+                    curNum[0] = Integer.MIN_VALUE;
+                    page.add(new Rule(snap, coord.r(rp.xMm()), coord.r(rp.yMm()),
+                            coord.r(rp.wMm()), coord.r(rp.hMm())));
+                }
+            }
+        }
+        flush.run();
+        if (!outlineGlyphs.isEmpty()) {
+            page.add(new OutlineRun(snap, outlineGlyphs));
+        }
+        // 注：legacy 文本暂不参与链接区域累计（pdf:bann 内的 legacy 文本链接框偏小）
+    }
+
+    /** native 字体 char run：chars 即 Unicode，正向查 gid 后走普通文本 run */
+    private void addNativeCharRun(int fontNum, int[] chars, int[] xs, int[] ys) {
+        int n = chars.length;
+        char[] glyphs = new char[n];
+        String[] unicodes = new String[n];
+        for (int i = 0; i < n; i++) {
+            int cp = chars[i];
+            unicodes[i] = cp > 0 && cp <= 0x10FFFF && Character.isValidCodePoint(cp)
+                    ? new String(Character.toChars(cp)) : null;
+            glyphs[i] = 0; // gid 由发射器按 OTF cmap 处理；先记 0（notdef）
+        }
+        // gid 正向反查（native 字体有 cmap）
+        LoadedFont f = fonts.get(fontNum);
+        for (int i = 0; i < n && f != null; i++) {
+            String u = unicodes[i];
+            int gid = u != null ? f.gidOf(u) : -1;
+            glyphs[i] = (char) (gid >= 0 ? gid : 0);
+            if (gid < 0) {
+                unicodes[i] = null; // 轮廓兜底（notdef 位置输出轮廓）
+            }
+        }
+        int[] gids = new int[n];
+        double[] xsMm = new double[n];
+        double[] ysMm = new double[n];
+        for (int i = 0; i < n; i++) {
+            gids[i] = glyphs[i] & 0xFFFF;
+            xsMm[i] = coord.dviToMm(xs[i]) + ORIGIN_MM;
+            ysMm[i] = coord.dviToMm(ys[i]) + ORIGIN_MM;
+        }
+        page.add(new TextRun(state.snapshot(), fontNum, gids, xsMm, ysMm, unicodes, null));
     }
 
     // ---------------------------------------------------------------- 文本 run
@@ -407,7 +563,7 @@ public final class XdvInterpreter implements XdvEvents, SpecialParser.SpecialSin
     public void finish() {
         flushPage();
         if (legacyCharRuns > 0) {
-            warn("共 %d 处传统字体文本被跳过。", legacyCharRuns);
+            warn("共 %d 处传统字体文本因字体解析链不可用被跳过。", legacyCharRuns);
         }
         if (linksCreated > 0) {
             info("共 %d 个链接区域。", linksCreated);

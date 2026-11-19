@@ -20,11 +20,12 @@
     </properties>
 
     <dependencies>
-        <!-- XDV/SPX 解析（xdvjni，独立仓库；JitPack 构建内含 Linux 本地库） -->
+        <!-- XDV/SPX 解析（xdvjni，独立仓库；0.2.0 起 vendor tectonic_xdv 并
+             转发 legacy fnt_def、char run 带坐标、可注入 TFM 宽度） -->
         <dependency>
             <groupId>com.github.xiedada05</groupId>
             <artifactId>xdvjni</artifactId>
-            <version>0.1.0</version>
+            <version>0.2.0</version>
         </dependency>
 
         <!-- OFD 生成（GB/T 33190-2016），full 已聚合 core/font/layout/pkg/reader 等 -->
@@ -74,7 +75,8 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
             </plugin>
-            <!-- 可执行 CLI jar：mvn package -Pdist -->
+            <!-- 可执行 CLI fat jar：mvn package（无 profile，产物 target/xdviofdmx-<版本>-dist.jar）；
+                 mvn package -Pdeb 另出剔除 Debian 系统库的 -deb.jar（见下方 deb profile） -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -111,4 +113,83 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Debian 打包：剔以下 13 个坐标（构建 .deb 时改用系统 /usr/share/java 库，
+             见 scripts/build-deb.sh 与 README「Debian 打包」），其余（ofdrw 全家、
+             pdfbox 3.x、fontbox、pdfbox-io、jbig2-imageio、ujmp、xdvjni）仍打进 jar。
+             产物 target/xdviofdmx-<版本>-deb.jar（attached，classifier=deb）。 -->
+        <profile>
+            <id>deb</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-shade-plugin</artifactId>
+                        <version>3.5.1</version>
+                        <configuration>
+                            <shadedClassifierName>deb</shadedClassifierName>
+                            <filters>
+                                <filter>
+                                    <artifact>org.bouncycastle:*</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>commons-io:commons-io</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>org.apache.commons:commons-compress</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>commons-logging:commons-logging</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>org.slf4j:slf4j-api</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>jaxen:jaxen</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>org.dom4j:dom4j</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>net.lingala.zip4j:zip4j</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>org.apache.xmlgraphics:batik-all</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>org.apache.xmlgraphics:xmlgraphics-commons</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <!-- imageio-tiff 连带 common-lang/io/image、imageio-core/metadata -->
+                                <filter>
+                                    <artifact>com.twelvemonkeys.imageio:*</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.twelvemonkeys.common:*</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                                <!-- batik 传递依赖 xml-apis/xml-apis-ext，Debian 由
+                                     libxml-commons-external-java 提供 -->
+                                <filter>
+                                    <artifact>xml-apis:*</artifact>
+                                    <excludes><exclude>**</exclude></excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

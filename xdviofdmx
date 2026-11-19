@@ -15,6 +15,8 @@
 # 环境变量：
 #   XDVIOFDMX_JAR  dist jar 路径（缺省按脚本目录、target/ 与常见安装路径查找）
 #   JAVA_OPTS      附加 JVM 参数（如 "-Xmx2g"）
+#   XDVIOFDMX_CP   额外 classpath（冒号分隔）；另外 jar 同目录存在 classpath
+#                  文件时（deb 混合模式，见 build-deb.sh）自动挂接其内容
 #
 # 依赖：Java 17+（xdvjni 原生库已内嵌在 dist jar 中）。
 
@@ -52,7 +54,8 @@ else
     /usr/local/share/xdviofdmx/xdviofdmx.jar \
     /usr/local/lib/xdviofdmx/xdviofdmx.jar \
     /opt/xdviofdmx/xdviofdmx.jar \
-    "${HOME:-}/.local/share/xdviofdmx/xdviofdmx.jar"; do
+    "${HOME:-}/.local/share/xdviofdmx/xdviofdmx.jar" \
+    /usr/share/xdviofdmx/xdviofdmx.jar; do
     if [[ -f $cand ]]; then
       JAR=$cand
       break
@@ -84,4 +87,16 @@ if [[ -n ${JAVA_OPTS:-} ]]; then
   read -r -a extra <<< "${JAVA_OPTS}"
 fi
 
+# ---- classpath：deb 混合模式挂接 /usr/share/java 系统库 ----
+# 优先级：XDVIOFDMX_CP 环境变量 > jar 同目录 classpath 文件 > 无（-jar 模式）
+CP=
+if [[ -n ${XDVIOFDMX_CP:-} ]]; then
+  CP=${XDVIOFDMX_CP}
+elif [[ -r "$(dirname -- "$JAR")/classpath" ]]; then
+  CP=$(<"$(dirname -- "$JAR")/classpath")
+fi
+
+if [[ -n $CP ]]; then
+  exec "${JAVA[@]}" "${extra[@]}" "${jflags[@]}" -cp "${CP}:${JAR}" xdviofdmx.Main "$@"
+fi
 exec "${JAVA[@]}" "${extra[@]}" "${jflags[@]}" -jar "$JAR" "$@"
